@@ -23,7 +23,7 @@ namespace Twitch_Bot
         private const string CMD_VOTE_RETRACT = "retract";
         private const string CMD_VOTE_TALLY = "tally";
         private const string CMD_VOTE_HELP = "votehelp";
-        private const string RESX_LOCATION = @".\RecordValues.resx";
+        private const string RESX_LOCATION = @"./RecordValues.resx";
         readonly ConnectionCredentials credentials = new ConnectionCredentials(TwitchInfo.BotUsername, TwitchInfo.BotToken);
         TwitchClient client;
         TimerVote timerVote;
