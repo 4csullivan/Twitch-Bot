@@ -1,12 +1,10 @@
 ﻿using System;
-using System.Net.WebSockets;
-using System.Threading;
-using TwitchLib;
+using System.Collections;
+using System.Collections.Generic;
+using System.Resources;
+using System.Security.Authentication.ExtendedProtection.Configuration;
 using TwitchLib.Client;
-using TwitchLib.Client.Enums;
 using TwitchLib.Client.Events;
-using TwitchLib.Client.Exceptions;
-using TwitchLib.Client.Extensions;
 using TwitchLib.Client.Models;
 using TwitchLib.Communication.Clients;
 using TwitchLib.Communication.Models;
@@ -15,10 +13,21 @@ namespace Twitch_Bot
 {
     internal class TwitchChatBot
     {
-
+        private const string CMD_RECORD_SET = "setrecord";
+        private const string CMD_RECORD_LIST = "recordlist";
+        private const string CMD_RECORD_REMOVE = "removerecord";
+        private const string CMD_RECORD = "record";
+        private const string CMD_VOTE_INIT = "initvote";
+        private const string CMD_VOTE_CANCEL = "cancel";
+        private const string CMD_VOTE = "vote";
+        private const string CMD_VOTE_RETRACT = "retract";
+        private const string CMD_VOTE_TALLY = "tally";
+        private const string CMD_VOTE_HELP = "votehelp";
+        private const string RESX_LOCATION = @".\RecordValues.resx";
         readonly ConnectionCredentials credentials = new ConnectionCredentials(TwitchInfo.BotUsername, TwitchInfo.BotToken);
         TwitchClient client;
         TimerVote timerVote;
+        
 
         internal void Connect()
         {
@@ -47,15 +56,181 @@ namespace Twitch_Bot
 
         private void Client_OnChatCommandReceived(object sender, OnChatCommandReceivedArgs e)
         {
+            CheckVotes(e);
+            CheckRecords(e);
+            CheckHelp(e);
+        }
+
+        private void CheckHelp(OnChatCommandReceivedArgs e)
+        {
             switch (e.Command.CommandText)
             {
-                case "initvote":
-                    //client.SendMessage(e.Command.ChatMessage.Channel, "yup");
-                    if ((e.Command.ChatMessage.IsModerator || e.Command.ChatMessage.IsBroadcaster))
+                case "help":
+                    if (e.Command.ArgumentsAsList.Count <= 0)
+                    {
+                        client.SendMessage(e.Command.ChatMessage.Channel, $"What would you like help with? !help <category> | Current categories: Records, Votes");
+                    }
+                    else
+                    {
+                        string helpArg = e.Command.ArgumentsAsList[0].ToString().ToLower();
+                        switch (helpArg)
+                        {
+                            case "records":
+                                client.SendMessage(e.Command.ChatMessage.Channel, $"!{CMD_RECORD_SET} <name> <value> [Mod Only] // !{CMD_RECORD_REMOVE} <name> [Mod Only] // !{CMD_RECORD} <name> // !{CMD_RECORD_LIST}");
+                                break;
+                            case "votes":
+                                client.SendMessage(e.Command.ChatMessage.Channel, $"!{CMD_VOTE_INIT} <name> <#votes> [Mod Only] // !{CMD_VOTE_CANCEL} [Mod Only] // !{CMD_VOTE} // !{CMD_VOTE_RETRACT} // !{CMD_VOTE_TALLY}");
+                                break;
+                        }
+                    }
+
+                    break;
+            }
+        }
+
+        private void CheckRecords(OnChatCommandReceivedArgs e)
+        {
+            ResXResourceReader recordReader = new ResXResourceReader(RESX_LOCATION);
+            Dictionary<string, float> recordDict = new Dictionary<string, float>();
+
+            switch (e.Command.CommandText)
+            {
+                case CMD_RECORD_SET:
+                    string name = "";
+                    if (CheckModStatus(e))
                     {
                         if (e.Command.ArgumentsAsList.Count <= 0)
                         {
-                            client.SendMessage(e.Command.ChatMessage.Channel, "Error: no minimum votes inputted to succeed.");
+                            client.SendMessage(e.Command.ChatMessage.Channel, ErrorMessage("Missing arguments: <name> <value>"));
+                            break;
+                        }
+                        if (e.Command.ArgumentsAsList.Count < 2)
+                        {
+                            client.SendMessage(e.Command.ChatMessage.Channel, ErrorMessage("Requires 2 arguments: <name> <value>"));
+                            break;
+                        }
+                        name = e.Command.ArgumentsAsList[0].ToString();
+                        float value;
+                        bool validInput = float.TryParse(e.Command.ArgumentsAsList[1], out value);
+                        if (!validInput)
+                        {
+                            client.SendMessage(e.Command.ChatMessage.Channel, ErrorMessage("Please enter a valid number"));
+                            break;
+                        }
+
+
+                        foreach (DictionaryEntry entry in recordReader)
+                            recordDict.Add(entry.Key.ToString().ToLower(), (float)entry.Value);
+
+                        if (recordDict.ContainsKey(name.ToLower()))
+                        {
+                            if (recordDict[name.ToLower()] < value)
+                            {
+                                recordDict[name.ToLower()] = value;
+                                client.SendMessage(e.Command.ChatMessage.Channel, $"Record updated! {name.ToLower()} updated from {recordDict[name.ToLower()]} to {value}");
+                            }
+                            else
+                            {
+                                client.SendMessage(e.Command.ChatMessage.Channel, ErrorMessage($"The value for record {name.ToLower()} is higher! Current value: {recordDict[name.ToLower()]}"));
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            client.SendMessage(e.Command.ChatMessage.Channel, $"New Record set! {name.ToLower()} set to: {value}");
+                            recordDict.Add(name.ToLower(), value);
+                        }
+
+                        using (ResXResourceWriter recordWriter = new ResXResourceWriter(RESX_LOCATION))
+                        {
+                            foreach (KeyValuePair<string, float> entry in recordDict)
+                            {
+                                recordWriter.AddResource(entry.Key.ToString(), entry.Value);
+                            }
+                        }
+                    }
+                    break;
+                case CMD_RECORD_LIST:
+                    List<string> records = new List<string>();
+                    foreach (DictionaryEntry entry in recordReader)
+                    {
+                        records.Add(entry.Key.ToString());
+                    }
+                    string recordString = string.Join(", ", records.ToArray());
+                    client.SendMessage(e.Command.ChatMessage.Channel, $"The current records are: {recordString}");
+                    break;
+                case CMD_RECORD_REMOVE:
+                    foreach (DictionaryEntry entry in recordReader)
+                        recordDict.Add(entry.Key.ToString().ToLower(), (float)entry.Value);
+                    string record = e.Command.ArgumentsAsList[0].ToString().ToLower();
+                    if (recordDict.ContainsKey(record))
+                    {
+                        recordDict.Remove(record);
+                        client.SendMessage(e.Command.ChatMessage.Channel, $"The record {record} has been removed.");
+                    }
+                    else
+                    {
+                        client.SendMessage(e.Command.ChatMessage.Channel, ErrorMessage($"{record} does not currently exist"));
+                        break;
+                    }
+                    using (ResXResourceWriter recordWriter = new ResXResourceWriter(RESX_LOCATION))
+                    {
+                        foreach (KeyValuePair<string, float> entry in recordDict)
+                        {
+                            recordWriter.AddResource(entry.Key.ToString(), entry.Value);
+                        }
+                    }
+                    break;
+                case CMD_RECORD:
+                    if (e.Command.ArgumentsAsList.Count <= 0)
+                    {
+                        break;
+                    }
+                    string _record = e.Command.ArgumentsAsList[0];
+                    Object result;
+                    using (ResXResourceSet recordSet = new ResXResourceSet(RESX_LOCATION))
+                    {
+                        result = recordSet.GetObject(_record);
+                    }
+                    if (result == null)
+                    {
+                        client.SendMessage(e.Command.ChatMessage.Channel, ErrorMessage($"No record for {_record} exists"));
+                    }
+                    else
+                    {
+                        client.SendMessage(e.Command.ChatMessage.Channel, $"The record for {_record} is: {result}");
+                    }
+                    break;
+            }
+
+            recordReader.Close();
+        }
+
+
+        private bool CheckModStatus(OnChatCommandReceivedArgs e)
+        {
+            return e.Command.ChatMessage.IsModerator || e.Command.ChatMessage.IsBroadcaster;
+        }
+
+        private void CheckVotes(OnChatCommandReceivedArgs e)
+        {
+            switch (e.Command.CommandText)
+            {
+                case CMD_VOTE_INIT:
+                    //client.SendMessage(e.Command.ChatMessage.Channel, "yup");
+                    if ((e.Command.ChatMessage.IsModerator || e.Command.ChatMessage.IsBroadcaster))
+                    {
+                        if (!CheckNull())
+                        {
+                            if (timerVote.GetActive())
+                            {
+                                client.SendMessage(e.Command.ChatMessage.Channel, "There is already a vote active!");
+                                break;
+                            }
+                        }
+                        if (e.Command.ArgumentsAsList.Count <= 0)
+                        {
+                            client.SendMessage(e.Command.ChatMessage.Channel, "Error: no minimum votes inputted to succeed :/");
                             break;
                         }
                         int succeed;
@@ -84,11 +259,11 @@ namespace Twitch_Bot
                         }
                         else
                         {
-                            client.SendMessage(e.Command.ChatMessage.Channel, $"Error: unknown number.");
+                            client.SendMessage(e.Command.ChatMessage.Channel, $"Error: unknown number :/");
                         }
                     }
                     break;
-                case "cancel":
+                case CMD_VOTE_CANCEL:
                     if ((e.Command.ChatMessage.IsModerator || e.Command.ChatMessage.IsBroadcaster))
                     {
                         timerVote.SetActive(false);
@@ -97,7 +272,7 @@ namespace Twitch_Bot
                         client.SendMessage(e.Command.ChatMessage.Channel, $"The vote{voteTitle} has been cancelled.");
                     }
                     break;
-                case "vote":
+                case CMD_VOTE:
                     if (CheckNull())
                     {
                         client.SendMessage(e.Command.ChatMessage.Channel, "No vote has been initialized :/");
@@ -121,7 +296,7 @@ namespace Twitch_Bot
                     }
                     client.SendMessage(e.Command.ChatMessage.Channel, $"{e.Command.ChatMessage.DisplayName} has added a vote! Current total: {timerVote.GetVotes()}/{timerVote.GetSucceed()}");
                     break;
-                case "retract":
+                case CMD_VOTE_RETRACT:
                     if (CheckNull())
                     {
                         client.SendMessage(e.Command.ChatMessage.Channel, "No vote has been initialized :/");
@@ -145,7 +320,7 @@ namespace Twitch_Bot
                         client.SendMessage(e.Command.ChatMessage.Channel, $"Error: something fishy happpened :/");
                     }
                     break;
-                case "tally":
+                case CMD_VOTE_TALLY:
                     if (CheckNull())
                     {
                         client.SendMessage(e.Command.ChatMessage.Channel, "No vote has been initialized :/");
@@ -168,22 +343,15 @@ namespace Twitch_Bot
                         client.SendMessage(e.Command.ChatMessage.Channel, $"There are no votes currently ongoing.");
                     }
                     break;
-                /*case "help":
-                    string help = "!initvote <#votes> <title> - Start a new vote [Mod+ only].     "+
-                                  "!vote - add to a current vote.     " +
-                                  "!retract - remove your vote.     " +
-                                  "!tally - get info of current vote.     ";
-                    client.SendMessage(e.Command.ChatMessage.Channel, help);
-                    break;*/
             }
         }
 
         private void Client_OnMessageReceived(object sender, OnMessageReceivedArgs e)
         {
-            if (e.ChatMessage.Message.StartsWith("hi", StringComparison.InvariantCultureIgnoreCase))
-            {
-                client.SendMessage(e.ChatMessage.Channel, $"Hey there {e.ChatMessage.DisplayName}");
-            }
+            //if (e.ChatMessage.Message.StartsWith("hi", StringComparison.InvariantCultureIgnoreCase))
+            //{
+            //    client.SendMessage(e.ChatMessage.Channel, $"Hey there {e.ChatMessage.DisplayName}");
+            //}
         }
 
         private void Client_OnLog(object sender, OnLogArgs e)
@@ -208,6 +376,10 @@ namespace Twitch_Bot
         private bool CheckActive()
         {
             return timerVote.GetActive();
+        }
+        private string ErrorMessage(string body)
+        {
+            return $"Error! {body} :/";
         }
     }
 
